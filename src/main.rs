@@ -5,6 +5,8 @@ use std::process;
 fn match_pattern(input_line: &str, pattern: &str) -> bool {
     if pattern == "\\d" {
         return input_line.contains(|c| matches!(c, '0'..='9'))
+    } else if pattern == "\\w" {
+        return input_line.contains(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
     } else if pattern.len() == 1 {
         if let Some(c) = pattern.chars().next() {
             if matches!(c, 'a'..='z' | 'A'..='Z') {
