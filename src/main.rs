@@ -18,6 +18,9 @@ fn match_from_start(input_line: &str, pattern: &str) -> bool {
     if pattern.is_empty() {
         return true;
     }
+    if pattern == "$" {
+        return input_line.is_empty();
+    }
     if pattern.starts_with("\\d") {
         if input_line.chars().next().is_some_and(|c| matches!(c, '0'..='9')) {
             return match_from_start(&input_line[1..], &pattern[2..]);
@@ -65,6 +68,12 @@ fn match_from_start(input_line: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod test {
     use crate::match_pattern;
+
+    #[test]
+    fn end_of_string_anchor() {
+        assert!(match_pattern("dog", "dog$"));
+        assert!(!match_pattern("dogs", "dog$"));
+    }
 
     #[test]
     fn start_of_string_anchor() {
