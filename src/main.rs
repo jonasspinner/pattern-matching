@@ -48,17 +48,26 @@ fn match_from_start(input_line: &str, pattern: &str) -> bool {
             return match_from_start(input_line, suffix);
         }
     }
-    if let Some(c) = pattern.chars().next() {
+    let mut pattern_chars = pattern.chars();
+    if let Some(c) = pattern_chars.next() {
         if matches!(c, 'a'..='z' | 'A'..='Z' | ' ') {
-            let mut chars = input_line.chars();
-            let Some((start, input_line)) = chars.next().map(|c| (c, chars.as_str())) else { return false; };
-            if c == start {
-                return match_from_start(input_line, &pattern[1..]);
+            if let Some('+') = pattern_chars.next() {
+                let mut chars = input_line.chars();
+                loop {
+                    let Some((start, input_line)) = chars.next().map(|c| (c, chars.as_str())) else { return false; };
+                    if c == start {
+                        if match_from_start(input_line, &pattern[2..]) {
+                            return true;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
             } else {
-                return false;
+                let mut chars = input_line.chars();
+                let Some((start, input_line)) = chars.next().map(|c| (c, chars.as_str())) else { return false; };
+                return c == start && match_from_start(input_line, &pattern[1..]);
             }
-        } else {
-            return false;
         }
     }
     false
@@ -68,6 +77,18 @@ fn match_from_start(input_line: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod test {
     use crate::match_pattern;
+
+    #[test]
+    fn match_one_or_more_times() {
+        assert!(match_pattern("SaaS", "a+"));
+        assert!(!match_pattern("dog", "a+"));
+        assert!(match_pattern("caats", "ca+ts"));
+
+        assert!(match_pattern("aaabb", "a+"));
+        assert!(match_pattern("aaabb", "a+a"));
+        assert!(match_pattern("aaabb", "aa+ab"));
+        assert!(!match_pattern("aaabb", "aa+aa"));
+    }
 
     #[test]
     fn end_of_string_anchor() {
