@@ -3,38 +3,23 @@ use std::io;
 use std::process;
 
 fn match_pattern(input_line: &str, pattern: &str) -> bool {
-    if pattern == "\\d" {
-        return input_line.contains(|c| matches!(c, '0'..='9'))
-    } else if pattern == "\\w" {
-        return input_line.contains(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
-    } else if pattern.starts_with('[') {
-        if pattern[1..].starts_with('^') {
-            if let Some((prefix, suffix)) = pattern[2..].split_once(']') {
-                if suffix != "" { panic!("Unexpected pattern after group") }
-                let characters = prefix;
-                for c in input_line.chars() {
-                    if !characters.contains(c) { return true; }
-                }
-                return false;
-            }
-        } else {
-            if let Some((prefix, suffix)) = pattern[1..].split_once(']') {
-                if suffix != "" { panic!("Unexpected pattern after group") }
-                let characters = prefix;
-                for c in characters.chars() {
-                    if input_line.contains(c) { return true; }
-                }
-                return false;
+    match pattern {
+        "\\d" => input_line.chars().any(|c| matches!(c, '0'..='9')),
+        "\\w" => input_line.chars().any(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_')),
+        s if s.starts_with("[") && s.ends_with(']') => {
+            let group = &s[1..s.len() - 1];
+            if group.starts_with('^') {
+                !input_line.chars().all(|c| group[1..].contains(c))
+            } else {
+                input_line.chars().any(|c| group.contains(c))
             }
         }
-    } else if pattern.len() == 1 {
-        if let Some(c) = pattern.chars().next() {
-            if matches!(c, 'a'..='z' | 'A'..='Z') {
-                return input_line.contains(c);
-            }
+        s if s.len() == 1 => {
+            let c = s.chars().next().unwrap();
+            input_line.contains(c)
         }
+        _ => panic!("unrecognized pattern")
     }
-    panic!("Unhandled pattern: {}", pattern)
 }
 
 // Usage: echo <input_text> | your_program.sh -E <pattern>
