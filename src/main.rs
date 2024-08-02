@@ -8,13 +8,24 @@ fn match_pattern(input_line: &str, pattern: &str) -> bool {
     } else if pattern == "\\w" {
         return input_line.contains(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
     } else if pattern.starts_with('[') {
-        if let Some((prefix, suffix)) = pattern[1..].split_once(']') {
-            if suffix != "" { panic!("Unexpected pattern after group") }
-            let characters = prefix;
-            for c in characters.chars() {
-                if input_line.contains(c) { return true; }
+        if pattern[1..].starts_with('^') {
+            if let Some((prefix, suffix)) = pattern[2..].split_once(']') {
+                if suffix != "" { panic!("Unexpected pattern after group") }
+                let characters = prefix;
+                for c in input_line.chars() {
+                    if !characters.contains(c) { return true; }
+                }
+                return false;
             }
-            return false;
+        } else {
+            if let Some((prefix, suffix)) = pattern[1..].split_once(']') {
+                if suffix != "" { panic!("Unexpected pattern after group") }
+                let characters = prefix;
+                for c in characters.chars() {
+                    if input_line.contains(c) { return true; }
+                }
+                return false;
+            }
         }
     } else if pattern.len() == 1 {
         if let Some(c) = pattern.chars().next() {
