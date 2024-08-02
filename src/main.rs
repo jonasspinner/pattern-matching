@@ -3,22 +3,89 @@ use std::io;
 use std::process;
 
 fn match_pattern(input_line: &str, pattern: &str) -> bool {
-    match pattern {
-        "\\d" => input_line.chars().any(|c| matches!(c, '0'..='9')),
-        "\\w" => input_line.chars().any(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_')),
-        s if s.starts_with("[") && s.ends_with(']') => {
-            let group = &s[1..s.len() - 1];
-            if group.starts_with('^') {
-                !input_line.chars().all(|c| group[1..].contains(c))
+    let mut i = 0;
+    while i != input_line.len() {
+        if match_from_start(&input_line[i..], pattern) { return true; }
+        i += input_line[i..].chars().next().unwrap().len_utf8();
+    }
+    false
+}
+
+fn match_from_start(input_line: &str, pattern: &str) -> bool {
+    if pattern.is_empty() {
+        return true;
+    }
+    if pattern.starts_with("\\d") {
+        if input_line.chars().next().is_some_and(|c| matches!(c, '0'..='9')) {
+            return match_from_start(&input_line[1..], &pattern[2..]);
+        } else {
+            return false;
+        }
+    }
+    if pattern.starts_with("\\w") {
+        if input_line.chars().next().is_some_and(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_')) {
+            return match_from_start(&input_line[1..], &pattern[2..]);
+        } else {
+            return false;
+        }
+    }
+    if pattern.starts_with("[") {
+        let (group, suffix) = pattern[1..].split_once(']').expect("no end group");
+        let mut chars = input_line.chars();
+        let Some((start, input_line)) = chars.next().map(|c| (c, chars.as_str())) else { return false; };
+        let group_matches = if group.starts_with('^') {
+            !group[1..].contains(start)
+        } else {
+            group.contains(start)
+        };
+        if group_matches {
+            return match_from_start(input_line, suffix);
+        }
+    }
+    if let Some(c) = pattern.chars().next() {
+        if matches!(c, 'a'..='z' | 'A'..='Z' | ' ') {
+            let mut chars = input_line.chars();
+            let Some((start, input_line)) = chars.next().map(|c| (c, chars.as_str())) else { return false; };
+            if c == start {
+                return match_from_start(input_line, &pattern[1..]);
             } else {
-                input_line.chars().any(|c| group.contains(c))
+                return false;
             }
+        } else {
+            return false;
         }
-        s if s.len() == 1 => {
-            let c = s.chars().next().unwrap();
-            input_line.contains(c)
-        }
-        _ => panic!("unrecognized pattern")
+    }
+    false
+}
+
+
+#[cfg(test)]
+mod test {
+    use crate::match_pattern;
+
+    #[test]
+    fn combining_character_classes() {
+        assert!(match_pattern("1 apple", "\\d apple"));
+        assert!(!match_pattern("1 orange", "\\d apple"));
+        assert!(match_pattern("100 apples", "\\d\\d\\d apple"));
+        assert!(!match_pattern("1 apple", "\\d\\d\\d apple"));
+        assert!(match_pattern("3 dogs", "\\d \\w\\w\\ws"));
+        assert!(match_pattern("4 cats", "\\d \\w\\w\\ws"));
+        assert!(!match_pattern("1 dog", "\\d \\w\\w\\ws"));
+    }
+    #[test]
+    fn test() {
+        assert!(match_pattern("sally has 3 apples", "\\d apple"));
+        assert!(match_pattern("apple", "[^xyz]"));
+        assert!(!match_pattern("banana", "[^anb]"));
+        assert!(match_pattern("a", "[abcd]"));
+        assert!(!match_pattern("efgh", "[abcd]"));
+        assert!(match_pattern("word", "\\w"));
+        assert!(!match_pattern("$!?", "\\w"));
+        assert!(match_pattern("123", "\\d"));
+        assert!(!match_pattern("apple", "\\d"));
+        assert!(match_pattern("dog", "d"));
+        assert!(!match_pattern("dog", "f"));
     }
 }
 
