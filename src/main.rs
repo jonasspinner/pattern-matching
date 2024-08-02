@@ -51,22 +51,41 @@ fn match_from_start(input_line: &str, pattern: &str) -> bool {
     let mut pattern_chars = pattern.chars();
     if let Some(c) = pattern_chars.next() {
         if matches!(c, 'a'..='z' | 'A'..='Z' | ' ') {
-            if let Some('+') = pattern_chars.next() {
-                let mut chars = input_line.chars();
-                loop {
-                    let Some((start, input_line)) = chars.next().map(|c| (c, chars.as_str())) else { return false; };
-                    if c == start {
-                        if match_from_start(input_line, &pattern[2..]) {
-                            return true;
+            match pattern_chars.next() {
+                Some('+') => {
+                    let mut chars = input_line.chars();
+                    loop {
+                        let Some((start, input_line)) = chars.next().map(|c| (c, chars.as_str())) else { return false; };
+                        if c == start {
+                            if match_from_start(input_line, &pattern[2..]) {
+                                return true;
+                            }
+                        } else {
+                            return false;
                         }
-                    } else {
-                        return false;
+                    }
+                },
+                Some('?') => {
+                    if match_from_start(input_line, &pattern[2..]) {
+                        return true;
+                    }
+                    let mut chars = input_line.chars();
+                    loop {
+                        let Some((start, input_line)) = chars.next().map(|c| (c, chars.as_str())) else { return false; };
+                        if c == start {
+                            if match_from_start(input_line, &pattern[2..]) {
+                                return true;
+                            }
+                        } else {
+                            return false;
+                        }
                     }
                 }
-            } else {
-                let mut chars = input_line.chars();
-                let Some((start, input_line)) = chars.next().map(|c| (c, chars.as_str())) else { return false; };
-                return c == start && match_from_start(input_line, &pattern[1..]);
+                _ => {
+                    let mut chars = input_line.chars();
+                    let Some((start, input_line)) = chars.next().map(|c| (c, chars.as_str())) else { return false; };
+                    return c == start && match_from_start(input_line, &pattern[1..]);
+                }
             }
         }
     }
@@ -77,6 +96,13 @@ fn match_from_start(input_line: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod test {
     use crate::match_pattern;
+
+    #[test]
+    fn match_zero_or_one_times() {
+        assert!(match_pattern("dogs", "dogs?"));
+        assert!(match_pattern("dog", "dogs?"));
+        assert!(!match_pattern("cat", "dogs?"));
+    }
 
     #[test]
     fn match_one_or_more_times() {
