@@ -3,6 +3,9 @@ use std::io;
 use std::process;
 
 fn match_pattern(input_line: &str, pattern: &str) -> bool {
+    if pattern.starts_with('^') {
+        return match_from_start(input_line, &pattern[1..]);
+    }
     let mut i = 0;
     while i != input_line.len() {
         if match_from_start(&input_line[i..], pattern) { return true; }
@@ -62,6 +65,12 @@ fn match_from_start(input_line: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod test {
     use crate::match_pattern;
+
+    #[test]
+    fn start_of_string_anchor() {
+        assert!(match_pattern("log", "^log"));
+        assert!(!match_pattern("slog", "^log"));
+    }
 
     #[test]
     fn combining_character_classes() {
