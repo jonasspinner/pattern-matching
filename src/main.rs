@@ -1,8 +1,8 @@
 use std::env;
-use std::io;
-use std::process;
 use std::fmt::{Debug, Formatter, Write};
+use std::io;
 use std::iter::Peekable;
+use std::process;
 use std::str::Chars;
 
 #[derive(PartialEq)]
@@ -12,6 +12,7 @@ pub(crate) enum Ast {
     CharacterSet(CharacterSet),
     Group(Group),
     Alternation(Alternation),
+    Backreference(u8),
 }
 
 impl Debug for Ast {
@@ -63,6 +64,9 @@ impl Debug for Ast {
                 }
                 f.write_char(')')
             }
+            Ast::Backreference(n) => {
+                write!(f, "\\{n}")
+            }
         }
     }
 }
@@ -90,11 +94,13 @@ struct CharacterSet {
 
 #[derive(Debug, PartialEq)]
 struct Group {
+    idx: usize,
     items: Vec<Ast>,
 }
 
 #[derive(Debug, PartialEq)]
 struct Alternation {
+    idx: usize,
     alternatives: Vec<Vec<Ast>>,
 }
 
@@ -105,6 +111,10 @@ pub(crate) struct Pattern {
     items: Vec<Ast>,
 }
 
+struct Parser {
+    group_idx: usize,
+}
+
 fn parse_count(pattern: &mut Peekable<Chars>) -> Count {
     match pattern.next_if(|c| matches!(c, '+' | '?')) {
         Some('+') => Count::OneOrMore,
@@ -113,19 +123,18 @@ fn parse_count(pattern: &mut Peekable<Chars>) -> Count {
     }
 }
 
-fn read_group_items(pattern: &mut Peekable<Chars>) -> Result<Vec<Ast>, ParseError> {
-    let mut items = vec![];
-    loop {
-        if pattern.peek().is_none() {
-            break;
+impl Parser {
+    fn read_group_items(&mut self, pattern: &mut Peekable<Chars>) -> Result<Vec<Ast>, ParseError> {
+        let mut items = vec![];
+        loop {
+            if pattern.peek().is_none() {
+                break;
+            }
+            items.extend(Ast::parse(pattern)?)
         }
-        items.extend(Ast::parse(pattern)?)
+        Ok(items)
     }
-    Ok(items)
-}
-
-impl Ast {
-    fn parse(pattern: &mut Peekable<Chars>) -> Result<Vec<Ast>, ParseError> {
+    fn parse(&mut self, pattern: &mut Peekable<Chars>) -> Result<Vec<Ast>, ParseError> {
         let mut items = vec![];
         let Some(char) = pattern.next() else {
             return Ok(items);
@@ -133,11 +142,26 @@ impl Ast {
 
         match char {
             '\\' => {
-                let count: Count = Count::One;
-                match pattern.next() {
+                let c = pattern.next();
+                let count: Count = parse_count(pattern);
+                match c {
                     Some('\\') => items.push(Ast::Literal(count, '\\')),
                     Some('d') => items.push(Ast::Class(count, Class::Digit)),
                     Some('w') => items.push(Ast::Class(count, Class::Alphanumeric)),
+                    Some('0') => return Err(ParseError::BackreferenceZero),
+                    Some(n) if n.is_ascii_digit() => {
+                        if pattern.peek().is_some_and(|c| c.is_ascii_digit()) {
+                            return Err(ParseError::MultiDigitBackreference);
+                        }
+                        if count != Count::One {
+                            return Err(ParseError::BackreferenceCountNotOne);
+                        }
+                        let n = ((n as u32) - ('0' as u32)) as usize;
+                        if n > self.group_idx + 1 {
+                            return Err(ParseError::BackreferenceToEarly(n, self.group_idx + 1));
+                        }
+                        items.push(Ast::Backreference(n as u8));
+                    }
                     Some(char) => return Err(ParseError::UnexpectedEscapedChar(char)),
                     None => return Err(ParseError::UnexpectedEnd),
                 }
@@ -175,33 +199,46 @@ impl Ast {
                         Some('(') => return Err(ParseError::NestedGroup),
                         Some('|') => {
                             group_items
-                                .push(read_group_items(&mut group_chars.chars().peekable())?);
+                                .push(self.read_group_items(&mut group_chars.chars().peekable())?);
                             group_chars.clear();
                         }
                         Some(')') => {
                             group_items
-                                .push(read_group_items(&mut group_chars.chars().peekable())?);
+                                .push(self.read_group_items(&mut group_chars.chars().peekable())?);
                             break;
                         }
                         Some(ch) => group_chars.push(ch),
                     }
                 }
+                let idx = self.group_idx;
+                self.group_idx += 1;
                 match group_items.len() {
                     0 => return Err(ParseError::EmptyGroup),
                     1 => items.push(Ast::Group(Group {
+                        idx,
                         items: group_items.into_iter().next().unwrap(),
                     })),
-                    _ => items.push(Ast::Alternation(Alternation { alternatives: group_items })),
+                    _ => items.push(Ast::Alternation(Alternation {
+                        idx,
+                        alternatives: group_items,
+                    })),
                 }
             }
             'a'..='z' | 'A'..='Z' | '0'..='9' | ' ' | '_' => {
                 let count = parse_count(pattern);
                 items.push(Ast::Literal(count, char));
             }
-            char => return Err(ParseError::UnexpectedChar(char))
+            char => return Err(ParseError::UnexpectedChar(char)),
         }
 
         Ok(items)
+    }
+}
+
+impl Ast {
+    fn parse(pattern: &mut Peekable<Chars>) -> Result<Vec<Ast>, ParseError> {
+        let mut parser = Parser { group_idx: 0 };
+        parser.parse(pattern)
     }
 }
 
@@ -215,6 +252,10 @@ enum ParseError {
     EmptyGroup,
     MissingClosingParenthesis,
     MissingClosingCharacterSet,
+    BackreferenceZero,
+    MultiDigitBackreference,
+    BackreferenceCountNotOne,
+    BackreferenceToEarly(usize, usize),
 }
 
 impl Pattern {
@@ -246,56 +287,119 @@ impl Pattern {
 }
 
 impl Ast {
-    fn match_count(text: &mut Peekable<Chars>, count: Count, pred: impl Fn(&char) -> bool) -> bool {
+    fn match_count(
+        text: &mut Peekable<Chars>,
+        count: Count,
+        pred: impl Fn(&char) -> bool,
+        current_group: Option<&mut String>,
+    ) -> bool {
         match count {
-            Count::One => text.next_if(&pred).is_some(),
+            Count::One => text
+                .next_if(&pred)
+                .inspect(|c| {
+                    if let Some(s) = current_group {
+                        s.push(*c)
+                    }
+                })
+                .is_some(),
             Count::OneOrMore => {
                 let mut k = 0;
-                while text.next_if(&pred).is_some() {
+                let mut chars = String::new();
+                while let Some(c) = text.next_if(&pred) {
+                    chars.push(c);
                     k += 1;
                 }
-                k >= 1
+                if k >= 1 {
+                    if let Some(s) = current_group {
+                        s.push_str(&chars)
+                    }
+                    true
+                } else {
+                    false
+                }
             }
             Count::ZeroOrOne => {
-                text.next_if(pred);
+                if let Some(c) = text.next_if(&pred) {
+                    if let Some(s) = current_group {
+                        s.push(c);
+                    }
+                }
                 true
             }
         }
     }
 
-    fn match_at_start(&self, text: &mut Peekable<Chars>) -> bool {
+    fn match_at_start(
+        &self,
+        text: &mut Peekable<Chars>,
+        groups: &mut Vec<String>,
+        current_group: Option<&mut String>,
+    ) -> bool {
         return match self {
-            Ast::Literal(count, lit) => Ast::match_count(text, *count, |c| c == lit),
+            Ast::Literal(count, lit) => Ast::match_count(text, *count, |c| c == lit, current_group),
             Ast::Class(count, class) => match class {
-                Class::Alphanumeric => Ast::match_count(text, *count, |c| c.is_alphanumeric()),
-                Class::Digit => Ast::match_count(text, *count, |c| c.is_ascii_digit()),
-                Class::Wildcard => Ast::match_count(text, *count, |c| !"[](|)\\".contains(*c)),
+                Class::Alphanumeric => {
+                    Ast::match_count(text, *count, |c| c.is_alphanumeric(), current_group)
+                }
+                Class::Digit => {
+                    Ast::match_count(text, *count, |c| c.is_ascii_digit(), current_group)
+                }
+                Class::Wildcard => {
+                    Ast::match_count(text, *count, |c| !"[](|)\\".contains(*c), current_group)
+                }
             },
-            Ast::CharacterSet(set) => {
-                Ast::match_count(text, set.count, |c| set.negated ^ set.chars.contains(*c))
-            }
-            Ast::Group(group) => group.items.iter().all(|item| item.match_at_start(text)),
-            Ast::Alternation(alternation) => {
-                for alt in &alternation.alternatives {
-                    let mut text_clone = text.clone();
-                    if alt.iter().all(|item| item.match_at_start(&mut text_clone)) {
-                        *text = text_clone;
-                        return true;
-                    }
+            Ast::CharacterSet(set) => Ast::match_count(
+                text,
+                set.count,
+                |c| set.negated ^ set.chars.contains(*c),
+                current_group,
+            ),
+            Ast::Group(group) => {
+                let mut current_group = String::new();
+                if group
+                    .items
+                    .iter()
+                    .all(|item| item.match_at_start(text, groups, Some(&mut current_group)))
+                {
+                    assert_eq!(groups.len(), group.idx);
+                    groups.push(current_group);
+                    return true;
                 }
                 false
             }
+            Ast::Alternation(alternation) => {
+                let mut current_group = String::new();
+                for alt in &alternation.alternatives {
+                    let mut text_clone = text.clone();
+                    if alt.iter().all(|item| {
+                        item.match_at_start(&mut text_clone, groups, Some(&mut current_group))
+                    }) {
+                        assert_eq!(groups.len(), alternation.idx);
+                        groups.push(current_group);
+                        *text = text_clone;
+                        return true;
+                    }
+                    current_group.clear();
+                }
+                false
+            }
+            Ast::Backreference(n) => groups.get(*n as usize - 1).is_some_and(|matched| {
+                let chars: String = text.take(matched.len()).collect();
+                matched == &chars
+            }),
         };
     }
 }
 
 fn match_pattern(text: &str, pattern: &str) -> bool {
-    let Ok(Pattern { start, end, items }) = Pattern::parse(pattern) else {
-        return false;
-    };
+    let Pattern { start, end, items } = Pattern::parse(pattern).unwrap();
     let mut text = text.chars().peekable();
+    let mut groups = vec![];
     if start {
-        if items.iter().all(|item| item.match_at_start(&mut text)) {
+        if items
+            .iter()
+            .all(|item| item.match_at_start(&mut text, &mut groups, None))
+        {
             !end || text.peek().is_none()
         } else {
             false
@@ -305,13 +409,14 @@ fn match_pattern(text: &str, pattern: &str) -> bool {
             let mut text_starting_at = text.clone();
             if items
                 .iter()
-                .all(|item| item.match_at_start(&mut text_starting_at))
+                .all(|item| item.match_at_start(&mut text_starting_at, &mut groups, None))
             {
                 if end && text_starting_at.peek().is_some() {
                 } else {
                     return true;
                 }
             }
+            groups.clear();
             if text.next().is_none() {
                 return false;
             }
@@ -321,7 +426,7 @@ fn match_pattern(text: &str, pattern: &str) -> bool {
 
 #[cfg(test)]
 mod test {
-    use crate::match_pattern;
+    use crate::{match_pattern, Group};
 
     use crate::{Alternation, Ast, CharacterSet, Class, Count, Pattern};
 
@@ -405,23 +510,52 @@ mod test {
         assert_eq!(
             Pattern::parse("(a|b|c)"),
             Ok(t([Ast::Alternation(Alternation {
+                idx: 0,
                 alternatives: vec![
                     vec![Ast::Literal(Count::One, 'a')],
                     vec![Ast::Literal(Count::One, 'b')],
-                    vec![Ast::Literal(Count::One, 'c')]
-                ]
+                    vec![Ast::Literal(Count::One, 'c')],
+                ],
             })]))
         );
         assert_eq!(
             Pattern::parse("(a|b|)"),
             Ok(t([Ast::Alternation(Alternation {
+                idx: 0,
                 alternatives: vec![
                     vec![Ast::Literal(Count::One, 'a')],
                     vec![Ast::Literal(Count::One, 'b')],
-                    vec![]
-                ]
+                    vec![],
+                ],
             })]))
         );
+        assert_eq!(
+            Pattern::parse("(\\w+) and \\1"),
+            Ok(t([
+                Ast::Group(Group {
+                    idx: 0,
+                    items: vec![Ast::Class(Count::OneOrMore, Class::Alphanumeric)]
+                }),
+                Ast::Literal(Count::One, ' '),
+                Ast::Literal(Count::One, 'a'),
+                Ast::Literal(Count::One, 'n'),
+                Ast::Literal(Count::One, 'd'),
+                Ast::Literal(Count::One, ' '),
+                Ast::Backreference(1)
+            ]))
+        )
+    }
+
+    #[test]
+    fn single_backreference() {
+        assert!(match_pattern("cat and cat", "(cat) and \\1"));
+        assert!(!match_pattern("cat and dog", "(cat) and \\1"));
+        assert!(match_pattern("dog and dog", "(cat|dog) and \\1"));
+        assert!(match_pattern("cat and cat", "(cat|dog) and \\1"));
+        assert!(!match_pattern("cat and dog", "(cat|dog) and \\1"));
+        assert!(match_pattern("cat and cat", "(\\w+) and \\1"));
+        assert!(match_pattern("dog and dog", "(\\w+) and \\1"));
+        assert!(!match_pattern("cat and dog", "(\\w+) and \\1"));
     }
 
     #[test]
@@ -458,6 +592,8 @@ mod test {
         //assert!(match_pattern("baaabb", "ba+ab"));
         //assert!(match_pattern("aaabb", "aa+ab"));
         //assert!(!match_pattern("aaabb", "aa+aa"));
+
+        assert!(match_pattern("0123", "^\\d+$"));
     }
 
     #[test]
