@@ -113,6 +113,7 @@ pub(crate) struct Pattern {
 
 struct Parser {
     group_idx: usize,
+    in_group: bool,
 }
 
 fn parse_count(pattern: &mut Peekable<Chars>) -> Count {
@@ -130,7 +131,7 @@ impl Parser {
             if pattern.peek().is_none() {
                 break;
             }
-            items.extend(Ast::parse(pattern)?)
+            items.extend(self.parse(pattern)?)
         }
         Ok(items)
     }
@@ -191,8 +192,11 @@ impl Parser {
                 items.push(Ast::Class(count, Class::Wildcard))
             }
             '(' => {
+                if self.in_group { return Err(ParseError::NestedGroup) }
                 let mut group_chars = String::new();
                 let mut group_items = vec![];
+                self.in_group = true;
+                self.group_idx += 1;
                 loop {
                     match pattern.next() {
                         None => return Err(ParseError::MissingClosingParenthesis),
@@ -210,8 +214,8 @@ impl Parser {
                         Some(ch) => group_chars.push(ch),
                     }
                 }
+                self.in_group = false;
                 let idx = self.group_idx;
-                self.group_idx += 1;
                 match group_items.len() {
                     0 => return Err(ParseError::EmptyGroup),
                     1 => items.push(Ast::Group(Group {
@@ -232,13 +236,6 @@ impl Parser {
         }
 
         Ok(items)
-    }
-}
-
-impl Ast {
-    fn parse(pattern: &mut Peekable<Chars>) -> Result<Vec<Ast>, ParseError> {
-        let mut parser = Parser { group_idx: 0 };
-        parser.parse(pattern)
     }
 }
 
@@ -271,12 +268,13 @@ impl Pattern {
             pattern.next_back();
         }
 
+        let mut parser = Parser { group_idx: 0, in_group: false };
         let mut asts = vec![];
         loop {
             if pattern.peek().is_none() {
                 break;
             }
-            asts.extend(Ast::parse(&mut pattern)?)
+            asts.extend(parser.parse(&mut pattern)?)
         }
         Ok(Pattern {
             start,
@@ -361,7 +359,7 @@ impl Ast {
                     .iter()
                     .all(|item| item.match_at_start(text, groups, Some(&mut current_group)))
                 {
-                    assert_eq!(groups.len(), group.idx);
+                    assert_eq!(groups.len()+1, group.idx);
                     groups.push(current_group);
                     return true;
                 }
@@ -374,7 +372,7 @@ impl Ast {
                     if alt.iter().all(|item| {
                         item.match_at_start(&mut text_clone, groups, Some(&mut current_group))
                     }) {
-                        assert_eq!(groups.len(), alternation.idx);
+                        assert_eq!(groups.len()+1, alternation.idx);
                         groups.push(current_group);
                         *text = text_clone;
                         return true;
@@ -510,7 +508,7 @@ mod test {
         assert_eq!(
             Pattern::parse("(a|b|c)"),
             Ok(t([Ast::Alternation(Alternation {
-                idx: 0,
+                idx: 1,
                 alternatives: vec![
                     vec![Ast::Literal(Count::One, 'a')],
                     vec![Ast::Literal(Count::One, 'b')],
@@ -521,7 +519,7 @@ mod test {
         assert_eq!(
             Pattern::parse("(a|b|)"),
             Ok(t([Ast::Alternation(Alternation {
-                idx: 0,
+                idx: 1,
                 alternatives: vec![
                     vec![Ast::Literal(Count::One, 'a')],
                     vec![Ast::Literal(Count::One, 'b')],
@@ -533,7 +531,7 @@ mod test {
             Pattern::parse("(\\w+) and \\1"),
             Ok(t([
                 Ast::Group(Group {
-                    idx: 0,
+                    idx: 1,
                     items: vec![Ast::Class(Count::OneOrMore, Class::Alphanumeric)]
                 }),
                 Ast::Literal(Count::One, ' '),
@@ -544,6 +542,12 @@ mod test {
                 Ast::Backreference(1)
             ]))
         )
+    }
+
+    #[test]
+    fn multiple_backreferences() {
+        assert!(match_pattern("3 red squares and 3 red circles", r#"(\d+) (\w+) squares and \1 \2 circles"#));
+        assert!(!match_pattern("3 red squares and 4 red circles", r#"(\d+) (\w+) squares and \1 \2 circles"#));
     }
 
     #[test]
