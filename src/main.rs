@@ -224,7 +224,7 @@ impl Parser {
                     })),
                 }
             }
-            'a'..='z' | 'A'..='Z' | '0'..='9' | ' ' | '_' => {
+            char if (char.is_ascii_alphanumeric() || char.is_ascii_punctuation() || char.is_ascii_whitespace()) && ! "(|)[]+?.\\^$".contains(char) => {
                 let count = parse_count(pattern);
                 items.push(Ast::Literal(count, char));
             }
@@ -556,6 +556,11 @@ mod test {
         assert!(match_pattern("cat and cat", "(\\w+) and \\1"));
         assert!(match_pattern("dog and dog", "(\\w+) and \\1"));
         assert!(!match_pattern("cat and dog", "(\\w+) and \\1"));
+
+        assert!(match_pattern("grep 101 is doing grep 101 times", r#"(\w\w\w\w \d\d\d) is doing \1 times"#));
+        assert!(!match_pattern("$?! 101 is doing $?! 101 times", r#"(\w\w\w\w \d\d\d) is doing \1 times"#));
+        assert!(!match_pattern("grep yes is doing grep yes times", r#"(\w\w\w\w \d\d\d) is doing \1 times"#));
+        assert!(match_pattern("abcd is abcd, not efg", r#"([abcd]+) is \1, not [^xyz]+"#));
     }
 
     #[test]
