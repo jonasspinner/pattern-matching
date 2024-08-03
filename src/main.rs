@@ -113,7 +113,7 @@ pub(crate) struct Pattern {
 
 struct Parser {
     group_idx: usize,
-    in_group: bool,
+    nesting_level: usize,
 }
 
 fn parse_count(pattern: &mut Peekable<Chars>) -> Count {
@@ -192,29 +192,38 @@ impl Parser {
                 items.push(Ast::Class(count, Class::Wildcard))
             }
             '(' => {
-                if self.in_group { return Err(ParseError::NestedGroup) }
                 let mut group_chars = String::new();
                 let mut group_items = vec![];
-                self.in_group = true;
+                self.nesting_level += 1;
                 self.group_idx += 1;
+                let mut num_open = 0;
                 loop {
                     match pattern.next() {
                         None => return Err(ParseError::MissingClosingParenthesis),
-                        Some('(') => return Err(ParseError::NestedGroup),
+                        Some('(') => {num_open += 1;                                 group_chars.push('(') },
                         Some('|') => {
-                            group_items
-                                .push(self.read_group_items(&mut group_chars.chars().peekable())?);
-                            group_chars.clear();
+                            if num_open == 0 {
+                                group_items
+                                    .push(self.read_group_items(&mut group_chars.chars().peekable())?);
+                                group_chars.clear();
+                            } else {
+                                group_chars.push('|');
+                            }
                         }
                         Some(')') => {
-                            group_items
-                                .push(self.read_group_items(&mut group_chars.chars().peekable())?);
-                            break;
+                            if num_open == 0 {
+                                group_items
+                                    .push(self.read_group_items(&mut group_chars.chars().peekable())?);
+                                break;
+                            } else {
+                                num_open -= 1;
+                                group_chars.push(')');
+                            }
                         }
                         Some(ch) => group_chars.push(ch),
                     }
                 }
-                self.in_group = false;
+                self.nesting_level -= 1;
                 let idx = self.group_idx;
                 match group_items.len() {
                     0 => return Err(ParseError::EmptyGroup),
@@ -228,7 +237,7 @@ impl Parser {
                     })),
                 }
             }
-            char if (char.is_ascii_alphanumeric() || char.is_ascii_punctuation() || char.is_ascii_whitespace()) && ! "(|)[]+?.\\^$".contains(char) => {
+            char if (char.is_ascii_alphanumeric() || char.is_ascii_punctuation() || char.is_ascii_whitespace()) && !"(|)[]+?.\\^$".contains(char) => {
                 let count = parse_count(pattern);
                 items.push(Ast::Literal(count, char));
             }
@@ -245,7 +254,6 @@ enum ParseError {
     UnexpectedEscapedChar(char),
     UnexpectedChar(char),
     UnexpectedEnd,
-    NestedGroup,
     EmptyGroup,
     MissingClosingParenthesis,
     MissingClosingCharacterSet,
@@ -268,7 +276,7 @@ impl Pattern {
             pattern.next_back();
         }
 
-        let mut parser = Parser { group_idx: 0, in_group: false };
+        let mut parser = Parser { group_idx: 0, nesting_level: 0 };
         let mut asts = vec![];
         loop {
             if pattern.peek().is_none() {
@@ -359,8 +367,9 @@ impl Ast {
                     .iter()
                     .all(|item| item.match_at_start(text, groups, Some(&mut current_group)))
                 {
-                    assert_eq!(groups.len()+1, group.idx);
-                    groups.push(current_group);
+                    let i = group.idx - 1;
+                    if groups.len() <= i { groups.resize(i+1, "".into()); }
+                    groups[i] = current_group;
                     return true;
                 }
                 false
@@ -372,7 +381,7 @@ impl Ast {
                     if alt.iter().all(|item| {
                         item.match_at_start(&mut text_clone, groups, Some(&mut current_group))
                     }) {
-                        assert_eq!(groups.len()+1, alternation.idx);
+                        assert_eq!(groups.len() + 1, alternation.idx);
                         groups.push(current_group);
                         *text = text_clone;
                         return true;
@@ -409,8 +418,7 @@ fn match_pattern(text: &str, pattern: &str) -> bool {
                 .iter()
                 .all(|item| item.match_at_start(&mut text_starting_at, &mut groups, None))
             {
-                if end && text_starting_at.peek().is_some() {
-                } else {
+                if end && text_starting_at.peek().is_some() {} else {
                     return true;
                 }
             }
@@ -428,7 +436,7 @@ mod test {
 
     use crate::{Alternation, Ast, CharacterSet, Class, Count, Pattern};
 
-    fn t(items: impl IntoIterator<Item = Ast>) -> Pattern {
+    fn t(items: impl IntoIterator<Item=Ast>) -> Pattern {
         Pattern {
             start: false,
             end: false,
@@ -532,7 +540,7 @@ mod test {
             Ok(t([
                 Ast::Group(Group {
                     idx: 1,
-                    items: vec![Ast::Class(Count::OneOrMore, Class::Alphanumeric)]
+                    items: vec![Ast::Class(Count::OneOrMore, Class::Alphanumeric)],
                 }),
                 Ast::Literal(Count::One, ' '),
                 Ast::Literal(Count::One, 'a'),
@@ -542,6 +550,11 @@ mod test {
                 Ast::Backreference(1)
             ]))
         )
+    }
+
+    #[test]
+    fn nested_backreferences() {
+        assert!(match_pattern("'cat and cat' is the same as 'cat and cat'", r#"('(cat) and \2') is the same as \1"#));
     }
 
     #[test]
@@ -576,6 +589,11 @@ mod test {
         //assert!(match_pattern("aba", "a(|b)a"));
         assert!(match_pattern("aba", "a(b|bb)a"));
         //assert!(match_pattern("abba", "a(b|bb)a"));
+    }
+
+    #[test]
+    fn group() {
+        assert!(match_pattern("abcd", "((ab)c)d"));
     }
 
     #[test]
