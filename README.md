@@ -5,6 +5,21 @@ This is a Rust solution to the
 ["Build Your Own grep" Challenge](https://app.codecrafters.io/courses/grep/overview).
 
 
+## Supported patterns
++ `\d` Digit
++ `\w` Alphanumeric
++ `.`  Wildcard
++ `a` Literal
++ `?` Zero or one
++ `+` One or more
++ `[abc]` Positive character set
++ `[^xyz]` Negative character set
++ `^` Start of string marker
++ `$` End of string marker
++ `(..)` Group
++ `(..|..)` Alternation
++ `\1` Backreference
+
 ### Codecrafters
 
 [Regular expressions](https://en.wikipedia.org/wiki/Regular_expression)
