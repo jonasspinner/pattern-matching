@@ -388,10 +388,12 @@ impl Ast {
                     if alt.iter().all(|item| {
                         item.match_at_start(&mut text_clone, groups, &mut new_current_group)
                     }) {
-                        println!("alternation \\{}: {:?}", alternation.idx, new_current_group);
-                        assert_eq!(groups.len() + 1, alternation.idx);
+                        let i = alternation.idx - 1;
+                        if groups.len() <= i {
+                            groups.resize(i + 1, "".into());
+                        }
                         current_group.push_str(&new_current_group);
-                        groups.push(new_current_group);
+                        groups[i] = new_current_group;
                         *text = text_clone;
                         return true;
                     }
@@ -607,6 +609,10 @@ mod test {
             r#"(\d+) (\w+) squares and \1 \2 circles"#
         ));
         assert!(match_pattern("abc-def is abc-def, not efg, abc, or def", r#"(([abc]+)-([def]+)) is \1, not ([^xyz]+), \2, or \3"#));
+        assert!(match_pattern("'howwdy hey there' is made up of 'howwdy' and 'hey'. howwdy hey there", r#"'((how+dy) (he?y) there)' is made up of '\2' and '\3'. \1"#));
+        assert!(!match_pattern("'hody hey there' is made up of 'hody' and 'hey'. hody hey there", r#"'((how+dy) (he?y) there)' is made up of '\2' and '\3'. \1"#));
+        assert!(!match_pattern("'howwdy heeey there' is made up of 'howwdy' and 'heeey'. howwdy heeey there", r#"'((how+dy) (he?y) there)' is made up of '\2' and '\3'. \1"#));
+        assert!(match_pattern("cat and fish, cat with fish, cat and fish", r#"((c.t|d.g) and (f..h|b..d)), \2 with \3, \1"#));
     }
 
     #[test]
