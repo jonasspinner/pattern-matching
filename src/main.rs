@@ -179,7 +179,8 @@ impl Parser {
                     match pattern.next() {
                         None => return Err(ParseError::MissingClosingCharacterSet),
                         Some(']') => break,
-                        Some(ch) => chars.push(ch),
+                        Some(ch) if ch.is_alphanumeric() => chars.push(ch),
+                        Some(_) => return Err(ParseError::NonAlphanumericCharacterSet),
                     }
                 }
                 let count = parse_count(pattern);
@@ -209,8 +210,9 @@ impl Parser {
                         }
                         Some('|') => {
                             if num_open == 0 {
-                                group_items
-                                    .push(self.read_group_items(&mut group_chars.chars().peekable())?);
+                                group_items.push(
+                                    self.read_group_items(&mut group_chars.chars().peekable())?,
+                                );
                                 group_chars.clear();
                             } else {
                                 group_chars.push('|');
@@ -218,8 +220,9 @@ impl Parser {
                         }
                         Some(')') => {
                             if num_open == 0 {
-                                group_items
-                                    .push(self.read_group_items(&mut group_chars.chars().peekable())?);
+                                group_items.push(
+                                    self.read_group_items(&mut group_chars.chars().peekable())?,
+                                );
                                 break;
                             } else {
                                 num_open -= 1;
@@ -242,7 +245,11 @@ impl Parser {
                     })),
                 }
             }
-            char if (char.is_ascii_alphanumeric() || char.is_ascii_punctuation() || char.is_ascii_whitespace()) && !"(|)[]+?.\\^$".contains(char) => {
+            char if (char.is_ascii_alphanumeric()
+                || char.is_ascii_punctuation()
+                || char.is_ascii_whitespace())
+                && !"(|)[]+?.\\^$".contains(char) =>
+            {
                 let count = parse_count(pattern);
                 items.push(Ast::Literal(count, char));
             }
@@ -262,6 +269,7 @@ enum ParseError {
     EmptyGroup,
     MissingClosingParenthesis,
     MissingClosingCharacterSet,
+    NonAlphanumericCharacterSet,
     BackreferenceZero,
     MultiDigitBackreference,
     BackreferenceCountNotOne,
@@ -281,7 +289,10 @@ impl Pattern {
             pattern.next_back();
         }
 
-        let mut parser = Parser { group_idx: 0, nesting_level: 0 };
+        let mut parser = Parser {
+            group_idx: 0,
+            nesting_level: 0,
+        };
         let mut asts = vec![];
         loop {
             if pattern.peek().is_none() {
@@ -350,7 +361,7 @@ impl Ast {
             Ast::CharacterSet(set) => Ast::match_count(
                 text,
                 set.count,
-                |c| set.negated ^ set.chars.contains(*c),
+                |c| c.is_alphanumeric() && (set.negated ^ set.chars.contains(*c)),
                 current_group,
             ),
             Ast::Group(group) => {
@@ -361,7 +372,9 @@ impl Ast {
                     .all(|item| item.match_at_start(text, groups, &mut new_current_group))
                 {
                     let i = group.idx - 1;
-                    if groups.len() <= i { groups.resize(i + 1, "".into()); }
+                    if groups.len() <= i {
+                        groups.resize(i + 1, "".into());
+                    }
                     current_group.push_str(&new_current_group);
                     groups[i] = new_current_group;
                     return true;
@@ -375,6 +388,7 @@ impl Ast {
                     if alt.iter().all(|item| {
                         item.match_at_start(&mut text_clone, groups, &mut new_current_group)
                     }) {
+                        println!("alternation \\{}: {:?}", alternation.idx, new_current_group);
                         assert_eq!(groups.len() + 1, alternation.idx);
                         current_group.push_str(&new_current_group);
                         groups.push(new_current_group);
@@ -414,11 +428,11 @@ fn match_pattern(text: &str, pattern: &str) -> bool {
     } else {
         loop {
             let mut text_starting_at = text.clone();
-            if items
-                .iter()
-                .all(|item| item.match_at_start(&mut text_starting_at, &mut groups, &mut current_group))
-            {
-                if end && text_starting_at.peek().is_some() {} else {
+            if items.iter().all(|item| {
+                item.match_at_start(&mut text_starting_at, &mut groups, &mut current_group)
+            }) {
+                if end && text_starting_at.peek().is_some() {
+                } else {
                     return true;
                 }
             }
@@ -437,7 +451,7 @@ mod test {
 
     use crate::{Alternation, Ast, CharacterSet, Class, Count, Pattern};
 
-    fn t(items: impl IntoIterator<Item=Ast>) -> Pattern {
+    fn t(items: impl IntoIterator<Item = Ast>) -> Pattern {
         Pattern {
             start: false,
             end: false,
@@ -551,19 +565,48 @@ mod test {
                 Ast::Backreference(1)
             ]))
         );
-        assert_eq!(Pattern::parse(r#"((\w)\2)_\1"#), Ok(t([Ast::Group(Group { idx: 1, items: vec![Ast::Group(Group { idx: 2, items: vec![Ast::Class(Count::One, Class::Alphanumeric)] }), Ast::Backreference(2)] }), Ast::Literal(Count::One, '_'), Ast::Backreference(1)])));
+        assert_eq!(
+            Pattern::parse(r#"((\w)\2)_\1"#),
+            Ok(t([
+                Ast::Group(Group {
+                    idx: 1,
+                    items: vec![
+                        Ast::Group(Group {
+                            idx: 2,
+                            items: vec![Ast::Class(Count::One, Class::Alphanumeric)]
+                        }),
+                        Ast::Backreference(2)
+                    ]
+                }),
+                Ast::Literal(Count::One, '_'),
+                Ast::Backreference(1)
+            ]))
+        );
     }
 
     #[test]
     fn nested_backreferences() {
-        assert!(match_pattern("'cat and cat' is the same as 'cat and cat'", r#"('(cat) and \2') is the same as \1"#));
-        assert!(!match_pattern("'cat and cat' is the same as 'cat and dog'", r#"('(cat) and \2') is the same as \1"#));
+        assert!(match_pattern(
+            "'cat and cat' is the same as 'cat and cat'",
+            r#"('(cat) and \2') is the same as \1"#
+        ));
+        assert!(!match_pattern(
+            "'cat and cat' is the same as 'cat and dog'",
+            r#"('(cat) and \2') is the same as \1"#
+        ));
     }
 
     #[test]
     fn multiple_backreferences() {
-        assert!(match_pattern("3 red squares and 3 red circles", r#"(\d+) (\w+) squares and \1 \2 circles"#));
-        assert!(!match_pattern("3 red squares and 4 red circles", r#"(\d+) (\w+) squares and \1 \2 circles"#));
+        assert!(match_pattern(
+            "3 red squares and 3 red circles",
+            r#"(\d+) (\w+) squares and \1 \2 circles"#
+        ));
+        assert!(!match_pattern(
+            "3 red squares and 4 red circles",
+            r#"(\d+) (\w+) squares and \1 \2 circles"#
+        ));
+        assert!(match_pattern("abc-def is abc-def, not efg, abc, or def", r#"(([abc]+)-([def]+)) is \1, not ([^xyz]+), \2, or \3"#));
     }
 
     #[test]
@@ -577,10 +620,22 @@ mod test {
         assert!(match_pattern("dog and dog", "(\\w+) and \\1"));
         assert!(!match_pattern("cat and dog", "(\\w+) and \\1"));
 
-        assert!(match_pattern("grep 101 is doing grep 101 times", r#"(\w\w\w\w \d\d\d) is doing \1 times"#));
-        assert!(!match_pattern("$?! 101 is doing $?! 101 times", r#"(\w\w\w\w \d\d\d) is doing \1 times"#));
-        assert!(!match_pattern("grep yes is doing grep yes times", r#"(\w\w\w\w \d\d\d) is doing \1 times"#));
-        assert!(match_pattern("abcd is abcd, not efg", r#"([abcd]+) is \1, not [^xyz]+"#));
+        assert!(match_pattern(
+            "grep 101 is doing grep 101 times",
+            r#"(\w\w\w\w \d\d\d) is doing \1 times"#
+        ));
+        assert!(!match_pattern(
+            "$?! 101 is doing $?! 101 times",
+            r#"(\w\w\w\w \d\d\d) is doing \1 times"#
+        ));
+        assert!(!match_pattern(
+            "grep yes is doing grep yes times",
+            r#"(\w\w\w\w \d\d\d) is doing \1 times"#
+        ));
+        assert!(match_pattern(
+            "abcd is abcd, not efg",
+            r#"([abcd]+) is \1, not [^xyz]+"#
+        ));
     }
 
     #[test]
